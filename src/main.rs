@@ -27,7 +27,13 @@ fn main() {
 fn handle_connection(mut stream: TcpStream) {
     let buf_reader = BufReader::new(&mut stream);
 
-    let request_line = buf_reader.lines().next().unwrap().unwrap();
+    let line = buf_reader.lines().next();
+    if line.is_none() {
+        // No data from the stream
+        return;
+    }
+
+    let request_line = line.unwrap().unwrap();
 
     let request_line_parts: Vec<_> = request_line.split(" ").collect();
     let [_method, request_path, _http_version] = request_line_parts.try_into().unwrap();
