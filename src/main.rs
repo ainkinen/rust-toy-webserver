@@ -1,7 +1,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
-use std::{env, fs};
+use std::time::Duration;
+use std::{env, fs, thread};
 
 const HTML_ROOT: &str = "html_root";
 
@@ -33,6 +34,10 @@ fn handle_connection(mut stream: TcpStream) {
 
     let request_path = match request_path {
         "/" => "hello.html", // Use hello as the default index page
+        "/sleep" => {
+            thread::sleep(Duration::from_secs(3));
+            "hello.html"
+        }
         path if path.starts_with("/") => &path[1..], // Strip leading /
         _ => panic!("Absolute request path not supported"),
     };
