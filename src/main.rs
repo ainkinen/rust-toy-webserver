@@ -1,3 +1,6 @@
+mod threadpool;
+
+use crate::threadpool::ThreadPool;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
@@ -11,6 +14,8 @@ fn main() {
     // TODO: Bind without string formatting
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
 
+    let thread_pool = ThreadPool::new(4);
+
     let local_addr = listener.local_addr().unwrap();
     println!("Listening on: {local_addr}");
 
@@ -20,7 +25,9 @@ fn main() {
         let peer_addr = stream.peer_addr().unwrap();
         println!("Connection from {peer_addr} established!");
 
-        handle_connection(stream);
+        thread_pool.execute(move || {
+            handle_connection(stream);
+        });
     }
 }
 
