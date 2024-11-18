@@ -3,32 +3,163 @@ mod threadpool;
 use crate::threadpool::ThreadPool;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::AsRawFd;
 use std::path::Path;
 use std::time::Duration;
-use std::{env, fs, thread};
+use std::{env, fs, io, mem, ptr, thread};
 
 const HTML_ROOT: &str = "html_root";
 
-fn main() {
+fn main() -> io::Result<()> {
     let port = env::var("PORT").unwrap_or("8080".to_string());
     // TODO: Bind without string formatting
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).unwrap();
+    let listener = TcpListener::bind(format!("127.0.0.1:{port}"))?;
+    listener.set_nonblocking(true)?;
+
+    // Kqueue
+    let kq = unsafe {
+        let fd = libc::kqueue();
+        if fd == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        fd
+    };
+
+    // Events to monitor
+    let changes = [
+        // TCP listener
+        libc::kevent {
+            ident: listener.as_raw_fd() as usize,
+            filter: libc::EVFILT_READ,
+            flags: libc::EV_ADD | libc::EV_ENABLE,
+            fflags: 0,
+            data: 0,
+            udata: ptr::null_mut(),
+        },
+        // SIGINT
+        libc::kevent {
+            ident: libc::SIGINT as usize,
+            filter: libc::EVFILT_SIGNAL,
+            flags: libc::EV_ADD | libc::EV_ENABLE,
+            fflags: 0,
+            data: 0,
+            udata: ptr::null_mut(),
+        },
+        // SIGTERM
+        libc::kevent {
+            ident: libc::SIGTERM as usize,
+            filter: libc::EVFILT_SIGNAL,
+            flags: libc::EV_ADD | libc::EV_ENABLE,
+            fflags: 0,
+            data: 0,
+            udata: ptr::null_mut(),
+        },
+    ];
+
+    // Register for events
+    unsafe {
+        if libc::kevent(
+            kq,
+            changes.as_ptr(),
+            changes.len() as i32,
+            ptr::null_mut(),
+            0,
+            ptr::null(),
+        ) == -1
+        {
+            return Err(io::Error::last_os_error());
+        }
+
+        // Signals
+        let mut sigset: libc::sigset_t = mem::zeroed();
+        libc::sigemptyset(&mut sigset);
+        libc::sigaddset(&mut sigset, libc::SIGINT);
+        libc::sigaddset(&mut sigset, libc::SIGTERM);
+        libc::sigprocmask(libc::SIG_BLOCK, &sigset, ptr::null_mut());
+    }
+
+    // Event loop
+    let mut events = vec![
+        libc::kevent {
+            ident: 0,
+            filter: 0,
+            flags: 0,
+            fflags: 0,
+            data: 0,
+            udata: ptr::null_mut(),
+        };
+        1024
+    ];
 
     let thread_pool = ThreadPool::new(4);
 
-    let local_addr = listener.local_addr().unwrap();
+    let local_addr = listener.local_addr()?;
     println!("Listening on: {local_addr}");
 
-    for stream in listener.incoming() {
-        let stream = stream.unwrap();
+    'event_loop: loop {
+        let num_events = unsafe {
+            libc::kevent(
+                kq,
+                ptr::null(),
+                0,
+                events.as_mut_ptr(),
+                events.len() as i32,
+                ptr::null(), // TODO: Add timeout?
+            )
+        };
 
-        let peer_addr = stream.peer_addr().unwrap();
-        println!("Connection from {peer_addr} established!");
+        if num_events == -1 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
 
-        thread_pool.execute(move || {
-            handle_connection(stream);
-        });
+        for event in &events[0..num_events as usize] {
+            match (event.filter, event.ident) {
+                // Signals
+                (libc::EVFILT_SIGNAL, sig_num) => match sig_num {
+                    sig if sig == libc::SIGINT as usize => {
+                        println!("SIGINT");
+                        break 'event_loop;
+                    }
+                    sig if sig == libc::SIGTERM as usize => {
+                        println!("SIGTERM");
+                        break 'event_loop;
+                    }
+                    _ => println!("Received unexpected signal {}", sig_num),
+                },
+                // Connections
+                (libc::EVFILT_READ, fd) if fd == listener.as_raw_fd() as usize => loop {
+                    match listener.accept() {
+                        Ok((stream, peer_addr)) => {
+                            println!("Connection from {peer_addr} established!");
+
+                            thread_pool.execute(move || {
+                                handle_connection(stream);
+                            });
+                        }
+                        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("Error accepting connection: {e}");
+                            break;
+                        }
+                    };
+                },
+                (filter, ident) => {
+                    println!(
+                        "Received unexpected event: filter={}, ident={}",
+                        filter, ident
+                    );
+                }
+            }
+        }
     }
+    println!("Shutting down");
+    Ok(())
 }
 
 fn handle_connection(mut stream: TcpStream) {
