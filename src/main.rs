@@ -1,3 +1,4 @@
+use log::{debug, info};
 use std::path::Path;
 use std::time::Duration;
 use std::{env, fs, io};
@@ -8,17 +9,19 @@ const HTML_ROOT: &str = "html_root";
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    env_logger::init();
+
     let port = env::var("PORT").unwrap_or("8080".to_string());
     // TODO: Bind without string formatting
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
 
     let local_addr = listener.local_addr()?;
-    println!("Listening on: {local_addr}");
+    info!("Listening on: {local_addr}");
 
     loop {
         let (stream, peer_addr) = listener.accept().await?;
         tokio::spawn(async move {
-            println!("Connection from {peer_addr} established!");
+            debug!("Connection from {peer_addr} established!");
             let _ = handle_connection(stream).await;
         });
     }
