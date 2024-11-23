@@ -1,16 +1,18 @@
 use log::{debug, info};
-use rust_toy_webserver::server;
 use std::io;
 use std::time::Duration;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
+
+use rust_toy_webserver::Server;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
     env_logger::init();
 
     let shutdown_token = CancellationToken::new();
-    let server_handle = tokio::spawn(server(shutdown_token.clone()));
+    let server = Server::new().await?;
+    let server_handle = tokio::spawn(server.run(shutdown_token.clone()));
 
     let shutdown_handle = tokio::spawn(async move {
         signal::ctrl_c().await.expect("Failed to listen for ctrl-c");

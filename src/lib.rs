@@ -10,34 +10,47 @@ use tokio_util::task::TaskTracker;
 
 const HTML_ROOT: &str = "html_root";
 
-pub async fn server(shutdown_token: CancellationToken) -> io::Result<()> {
-    let port = env::var("PORT").unwrap_or("8080".to_string());
-    // TODO: Bind without string formatting
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+#[derive(Debug)]
+pub struct Server {
+    pub listener: TcpListener,
+}
 
-    let local_addr = listener.local_addr()?;
-    info!("Listening on: {local_addr}");
+impl Server {
+    pub async fn new() -> io::Result<Self> {
+        let port = env::var("PORT").unwrap_or("8080".to_string());
+        // TODO: Bind without string formatting
+        let listener = TcpListener::bind(format!("127.0.0.1:{port}"))
+            .await
+            .expect("Failed to bind to port");
 
-    let handlers = TaskTracker::new();
+        let local_addr = listener.local_addr()?;
+        info!("Listening on: {local_addr}");
 
-    loop {
-        tokio::select! {
-            _ = shutdown_token.cancelled() => {
-                debug!("Stopped accepting new connections.");
-                break;
-            }
-            Ok((stream, peer_addr)) = listener.accept() => {
-                debug!("Connection from {peer_addr} established!");
-                handlers.spawn(handle_connection(stream));
-            }
-        }
+        Ok(Self { listener })
     }
 
-    debug!("Waiting for handlers to finish...");
-    handlers.close();
-    handlers.wait().await;
+    pub async fn run(self, shutdown_token: CancellationToken) -> io::Result<()> {
+        let handlers = TaskTracker::new();
 
-    Ok(())
+        loop {
+            tokio::select! {
+                _ = shutdown_token.cancelled() => {
+                    debug!("Stopped accepting new connections.");
+                    break;
+                }
+                Ok((stream, peer_addr)) = self.listener.accept() => {
+                    debug!("Connection from {peer_addr} established!");
+                    handlers.spawn(handle_connection(stream));
+                }
+            }
+        }
+
+        debug!("Waiting for handlers to finish...");
+        handlers.close();
+        handlers.wait().await;
+
+        Ok(())
+    }
 }
 
 async fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
