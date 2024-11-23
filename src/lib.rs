@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
-const HTML_ROOT: &str = "html_root";
+pub const HTML_ROOT: &str = "html_root";
 
 #[derive(Debug)]
 pub struct Server {
@@ -97,4 +97,28 @@ fn exists_within(canonical_root: &Path, path: &Path) -> bool {
     }
 
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn test_exists_within() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().canonicalize().unwrap();
+
+        // Create a test file
+        let test_file = root.join("test.txt");
+        fs::write(&test_file, "test").unwrap();
+
+        // Test valid path
+        assert!(exists_within(&root, &test_file));
+
+        // Test path traversal
+        let traversal_path = root.join("../test.txt");
+        assert!(!exists_within(&root, &traversal_path));
+    }
 }
