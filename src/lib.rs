@@ -1,12 +1,18 @@
+mod route_pattern;
+
 use log::{debug, info};
 use std::convert::TryInto;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 use std::{env, fs, io};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
+
+use crate::route_pattern::{RouteParams, RoutePattern};
 
 pub const HTML_ROOT: &str = "html_root";
 
@@ -53,6 +59,19 @@ impl Server {
     }
 }
 
+type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync + 'static>>;
+type HandlerRef = Box<
+    dyn Fn(TcpStream, String, RouteParams) -> BoxFuture<io::Result<()>> + Send + Sync + 'static,
+>;
+
+fn wrap_handler<F, Fut>(f: F) -> HandlerRef
+where
+    F: Fn(TcpStream, String, RouteParams) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = io::Result<()>> + Send + Sync + 'static,
+{
+    Box::new(move |a, b, c| Box::pin(f(a, b, c)))
+}
+
 async fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let buf_reader = BufReader::new(&mut stream);
 
@@ -63,14 +82,36 @@ async fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let request_line_parts: Vec<_> = request_line.split(" ").collect();
     let [_method, request_path, _http_version] = request_line_parts.try_into().unwrap();
 
-    let request_path = match request_path {
-        "/" => "hello.html", // Use hello as the default index page
-        "/sleep" => {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            "hello.html"
+    let routes: Vec<(RoutePattern, HandlerRef)> = vec![
+        ("/sleep".parse().unwrap(), wrap_handler(sleep_handler)),
+        ("/*".parse().unwrap(), wrap_handler(serve_file)),
+    ];
+
+    for (route, handler) in routes {
+        if let Some(params) = route.matches(request_path) {
+            debug!("route: {route:?} matches path: {request_path} with params: {params:?}");
+            return handler(stream, request_path.to_string(), params).await;
         }
-        path if path.starts_with("/") => &path[1..], // Strip leading /
-        _ => panic!("Absolute request path not supported"),
+    }
+
+    panic!("No routes matched!");
+}
+
+async fn sleep_handler(stream: TcpStream, _: String, p: RouteParams) -> io::Result<()> {
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    serve_file(stream, "hello.html".to_string(), p).await
+}
+
+async fn serve_file(
+    mut stream: TcpStream,
+    request_path: String,
+    _route_params: RouteParams,
+) -> io::Result<()> {
+    // Use hello.html as the index file
+    let request_path = if request_path == "/" {
+        "hello.html"
+    } else {
+        &request_path
     };
 
     // Canonicalize the path and check that we are still inside the html root
